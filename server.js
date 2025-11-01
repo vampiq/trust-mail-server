@@ -1,4 +1,6 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -11,11 +13,39 @@ app.use((req, res, next) => {
     next();
 });
 
-// Простое хранилище в памяти
-let storage = {
-    letters: [],
-    answers: []
-};
+// Файл для хранения данных
+const DATA_FILE = path.join(__dirname, 'data.json');
+
+// Функция загрузки данных
+function loadData() {
+    try {
+        if (fs.existsSync(DATA_FILE)) {
+            const data = fs.readFileSync(DATA_FILE, 'utf8');
+            return JSON.parse(data);
+        }
+    } catch (error) {
+        console.error('Ошибка загрузки данных:', error);
+    }
+    return { letters: [], answers: [] };
+}
+
+// Функция сохранения данных
+function saveData(data) {
+    try {
+        fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+        return true;
+    } catch (error) {
+        console.error('Ошибка сохранения данных:', error);
+        return false;
+    }
+}
+
+// Загружаем данные при запуске
+let storage = loadData();
+console.log('📊 Загружено данных:', {
+    letters: storage.letters.length,
+    answers: storage.answers.length
+});
 
 // Главная страница - проверка работы
 app.get('/', (req, res) => {
@@ -45,7 +75,12 @@ app.post('/save-letter', (req, res) => {
         
         storage.letters.push(letter);
         
-        console.log('Письмо сохранено. Всего писем:', storage.letters.length);
+        // Сохраняем в файл
+        if (saveData(storage)) {
+            console.log('✅ Письмо сохранено в файл. Всего писем:', storage.letters.length);
+        } else {
+            console.log('⚠️ Письмо сохранено только в памяти');
+        }
         
         res.json({ 
             success: true, 
@@ -89,7 +124,12 @@ app.post('/save-answer', (req, res) => {
         
         storage.answers.push(answer);
         
-        console.log('Ответ сохранен. Всего ответов:', storage.answers.length);
+        // Сохраняем в файл
+        if (saveData(storage)) {
+            console.log('✅ Ответ сохранен в файл. Всего ответов:', storage.answers.length);
+        } else {
+            console.log('⚠️ Ответ сохранен только в памяти');
+        }
         
         res.json({ 
             success: true, 
@@ -152,6 +192,7 @@ app.get('/stats', (req, res) => {
 app.delete('/clear', (req, res) => {
     storage.letters = [];
     storage.answers = [];
+    saveData(storage);
     res.json({ success: true, message: 'Все данные очищены' });
 });
 
@@ -159,5 +200,5 @@ app.delete('/clear', (req, res) => {
 app.listen(PORT, () => {
     console.log(`✅ Сервер запущен на порту ${PORT}`);
     console.log(`📧 Готов принимать письма!`);
-    console.log(`📍 URL: http://localhost:${PORT}`);
+    console.log(`💾 Данные сохраняются в файл`);
 });
