@@ -1,14 +1,12 @@
 const express = require('express');
-const { createClient } = require('@supabase/supabase-js');
 const app = express();
+
+// Получаем порт из переменной окружения или используем 3000 по умолчанию
 const PORT = process.env.PORT || 3000;
 
-// Supabase конфигурация - ВАШИ ДАННЫЕ
+// Supabase конфигурация
 const SUPABASE_URL = 'https://fnpjcijpjhammmqolxlz.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZucGpjaWpwamhhbW1tcW9seGx6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIxMzEyMDQsImV4cCI6MjA3NzcwNzIwNH0.Ul4W0aTjxuE_wwdmpdengqTk7KB5_fzoiJwvvf5Z7hI';
-
-// Создаем клиент Supabase
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 app.use(express.json());
 app.use((req, res, next) => {
@@ -18,30 +16,45 @@ app.use((req, res, next) => {
     next();
 });
 
+// Функции для работы с Supabase через fetch
+async function supabaseRequest(endpoint, options = {}) {
+    try {
+        const response = await fetch(`${SUPABASE_URL}/rest/v1/${endpoint}`, {
+            headers: {
+                'Content-Type': 'application/json',
+                'apikey': SUPABASE_KEY,
+                'Authorization': `Bearer ${SUPABASE_KEY}`,
+                ...options.headers
+            },
+            ...options
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        return await response.json();
+    } catch (error) {
+        console.log('❌ Ошибка Supabase:', error.message);
+        throw error;
+    }
+}
+
+// Проверка подключения к Supabase
+async function checkSupabaseConnection() {
+    try {
+        await supabaseRequest('letters?select=id&limit=1');
+        return true;
+    } catch (error) {
+        return false;
+    }
+}
+
 // Простое хранилище в памяти как fallback
 let memoryStorage = {
     letters: [],
     answers: []
 };
-
-// Проверка подключения к Supabase
-async function checkSupabaseConnection() {
-    try {
-        const { data, error } = await supabase
-            .from('letters')
-            .select('id')
-            .limit(1);
-        
-        if (error) {
-            console.log('❌ Ошибка Supabase:', error.message);
-            return false;
-        }
-        return true;
-    } catch (error) {
-        console.log('❌ Supabase недоступен:', error.message);
-        return false;
-    }
-}
 
 // Главная страница
 app.get('/', async (req, res) => {
@@ -51,7 +64,8 @@ app.get('/', async (req, res) => {
         success: true, 
         message: 'Сервер Почты доверия работает!',
         database: isSupabaseConnected ? 'Supabase PostgreSQL' : 'Memory',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        port: PORT
     });
 });
 
@@ -69,29 +83,31 @@ app.post('/save-letter', async (req, res) => {
         
         // Пытаемся сохранить в Supabase
         if (await checkSupabaseConnection()) {
-            const { data, error } = await supabase
-                .from('letters')
-                .insert([letter])
-                .select();
-            
-            if (error) {
-                if (error.code === '23505') { // unique violation
+            try {
+                const data = await supabaseRequest('letters', {
+                    method: 'POST',
+                    headers: {
+                        'Prefer': 'return=representation'
+                    },
+                    body: JSON.stringify(letter)
+                });
+                
+                console.log('✅ Письмо сохранено в Supabase, код:', letter.code);
+                
+                return res.json({ 
+                    success: true, 
+                    message: 'Письмо сохранено в базе данных!',
+                    id: data[0].id
+                });
+            } catch (error) {
+                if (error.message.includes('duplicate key')) {
                     return res.json({ 
                         success: false, 
                         error: 'Письмо с таким кодом уже существует' 
                     });
                 }
-                console.log('❌ Ошибка Supabase при сохранении:', error);
                 throw error;
             }
-            
-            console.log('✅ Письмо сохранено в Supabase, код:', letter.code);
-            
-            return res.json({ 
-                success: true, 
-                message: 'Письмо сохранено в базе данных!',
-                id: data[0].id
-            });
         }
         
         // Fallback: сохраняем в память
@@ -128,22 +144,18 @@ app.get('/get-letters', async (req, res) => {
     try {
         // Пытаемся загрузить из Supabase
         if (await checkSupabaseConnection()) {
-            const { data, error } = await supabase
-                .from('letters')
-                .select('*')
-                .order('created_at', { ascending: false });
-            
-            if (error) {
+            try {
+                const data = await supabaseRequest('letters?select=*&order=created_at.desc');
+                
+                console.log('✅ Загружено писем из Supabase:', data.length);
+                return res.json({ 
+                    success: true, 
+                    data: data,
+                    count: data.length
+                });
+            } catch (error) {
                 console.log('❌ Ошибка загрузки писем из Supabase:', error);
-                throw error;
             }
-            
-            console.log('✅ Загружено писем из Supabase:', data?.length || 0);
-            return res.json({ 
-                success: true, 
-                data: data || [],
-                count: data?.length || 0
-            });
         }
         
         // Fallback: загружаем из памяти
@@ -174,34 +186,32 @@ app.post('/save-answer', async (req, res) => {
         
         // Пытаемся сохранить в Supabase
         if (await checkSupabaseConnection()) {
-            // Сохраняем ответ
-            const { data: answerData, error: answerError } = await supabase
-                .from('answers')
-                .insert([answer])
-                .select();
-            
-            if (answerError) {
-                console.log('❌ Ошибка сохранения ответа в Supabase:', answerError);
-                throw answerError;
+            try {
+                // Сохраняем ответ
+                const answerData = await supabaseRequest('answers', {
+                    method: 'POST',
+                    headers: {
+                        'Prefer': 'return=representation'
+                    },
+                    body: JSON.stringify(answer)
+                });
+                
+                // Помечаем письмо как отвеченное
+                await supabaseRequest(`letters?code=eq.${answer.code}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ answered: true })
+                });
+                
+                console.log('✅ Ответ сохранен в Supabase для кода:', answer.code);
+                
+                return res.json({ 
+                    success: true, 
+                    message: 'Ответ сохранен в базе данных!',
+                    id: answerData[0].id
+                });
+            } catch (error) {
+                console.log('❌ Ошибка сохранения ответа в Supabase:', error);
             }
-            
-            // Помечаем письмо как отвеченное
-            const { error: updateError } = await supabase
-                .from('letters')
-                .update({ answered: true })
-                .eq('code', answer.code);
-            
-            if (updateError) {
-                console.log('⚠️ Не удалось обновить статус письма:', updateError);
-            }
-            
-            console.log('✅ Ответ сохранен в Supabase для кода:', answer.code);
-            
-            return res.json({ 
-                success: true, 
-                message: 'Ответ сохранен в базе данных!',
-                id: answerData[0].id
-            });
         }
         
         // Fallback: сохраняем в память
@@ -239,20 +249,15 @@ app.get('/get-answer/:code', async (req, res) => {
         
         // Пытаемся найти в Supabase
         if (await checkSupabaseConnection()) {
-            const { data, error } = await supabase
-                .from('answers')
-                .select('*')
-                .eq('code', code)
-                .single();
-            
-            if (error && error.code !== 'PGRST116') {
+            try {
+                const data = await supabaseRequest(`answers?code=eq.${code}&select=*`);
+                
+                if (data && data.length > 0) {
+                    console.log('✅ Ответ найден в Supabase для кода:', code);
+                    return res.json({ success: true, data: data[0] });
+                }
+            } catch (error) {
                 console.log('❌ Ошибка поиска в Supabase:', error);
-                throw error;
-            }
-            
-            if (data) {
-                console.log('✅ Ответ найден в Supabase для кода:', code);
-                return res.json({ success: true, data: data });
             }
         }
         
@@ -278,14 +283,12 @@ app.get('/get-all-answers', async (req, res) => {
     try {
         // Пытаемся загрузить из Supabase
         if (await checkSupabaseConnection()) {
-            const { data, error } = await supabase
-                .from('answers')
-                .select('*')
-                .order('created_at', { ascending: false });
-            
-            if (error) throw error;
-            
-            return res.json({ success: true, data: data || [] });
+            try {
+                const data = await supabaseRequest('answers?select=*&order=created_at.desc');
+                return res.json({ success: true, data: data });
+            } catch (error) {
+                console.log('❌ Ошибка загрузки ответов из Supabase:', error);
+            }
         }
         
         // Fallback: загружаем из памяти
@@ -301,26 +304,23 @@ app.get('/get-all-answers', async (req, res) => {
 app.get('/stats', async (req, res) => {
     try {
         if (await checkSupabaseConnection()) {
-            const { data: letters, error: lettersError } = await supabase
-                .from('letters')
-                .select('*');
-            
-            const { data: answers, error: answersError } = await supabase
-                .from('answers')
-                .select('*');
-            
-            if (lettersError || answersError) throw lettersError || answersError;
-            
-            const unanswered = letters.filter(letter => !letter.answered).length;
-            
-            return res.json({
-                success: true,
-                data: {
-                    letters: letters.length,
-                    answers: answers.length,
-                    unanswered: unanswered
-                }
-            });
+            try {
+                const letters = await supabaseRequest('letters?select=*');
+                const answers = await supabaseRequest('answers?select=*');
+                
+                const unanswered = letters.filter(letter => !letter.answered).length;
+                
+                return res.json({
+                    success: true,
+                    data: {
+                        letters: letters.length,
+                        answers: answers.length,
+                        unanswered: unanswered
+                    }
+                });
+            } catch (error) {
+                console.log('❌ Ошибка статистики Supabase:', error);
+            }
         }
         
         // Fallback: статистика из памяти
@@ -341,13 +341,14 @@ app.get('/stats', async (req, res) => {
     }
 });
 
-// Запуск сервера
-app.listen(PORT, async () => {
+// Запуск сервера - ВАЖНО: привязываем к 0.0.0.0
+app.listen(PORT, '0.0.0.0', async () => {
     console.log(`🚀 Сервер запущен на порту ${PORT}`);
+    console.log(`📍 Привязан к 0.0.0.0:${PORT}`);
     
     const isConnected = await checkSupabaseConnection();
     if (isConnected) {
-        console.log('🎉 Supabase подключен!');
+        console.log('🎉 Supabase подключен через REST API!');
         console.log('📊 База данных: PostgreSQL');
     } else {
         console.log('⚠️ Используется временное хранилище в памяти');
